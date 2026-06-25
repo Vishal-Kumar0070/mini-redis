@@ -1,0 +1,4 @@
+dump.rdb
+mini-redis-client
+mini-redis-server
+*.o
