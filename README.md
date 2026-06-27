@@ -10,7 +10,7 @@ Implements a TCP server that accepts client connections and processes commands �
 
 - **TCP client-server architecture** — server and client are separate programs communicating over sockets
 - **Core commands** — `SET`, `GET`, `DEL`, `EXISTS`, `EXPIRE`, `PING`, `DBSIZE`
-- **TTL / key expiry** — keys auto-delete after a set time (`SET key value EX 30`)
+- **TTL / key expiry** — keys auto-delete after a set time (`SET key value EX 30`); uses both lazy expiry (on access) and active expiry (background thread every 100ms)
 - **LRU eviction** — when the store hits max capacity, the least recently used key is automatically evicted (O(1) using hash map + doubly linked list)
 - **Persistence** — store is snapshotted to `dump.rdb` on shutdown and reloaded on startup so data survives restarts
 
@@ -142,9 +142,12 @@ When the store exceeds capacity, the key at the back is evicted.
 
 ### Lazy TTL Expiry
 
-Instead of a background thread constantly scanning for expired keys, expiry is checked *on access*. When `GET` or `EXISTS` is called, the entry's expiry timestamp is compared to the current time. If expired, it's deleted then and there.
+Instead of only checking expiry when a key is accessed (lazy expiry), the store also runs a **background thread** (`active_expiry_loop`) that sweeps all keys every 100ms and deletes expired ones. This is the same two-pronged approach used by real Redis:
 
-This is simpler to implement and is actually how real Redis handles it (combined with periodic active expiry, which is a future improvement).
+- **Lazy expiry** — checked on every GET/EXISTS/EXPIRE call. O(1), zero overhead.
+- **Active expiry** — background thread sweeps every 100ms. Cleans up expired keys that are never accessed again, preventing memory waste.
+
+The background thread holds a `std::mutex` lock during the sweep so it never conflicts with concurrent SET/GET operations. An `std::atomic<bool> running_` flag signals the thread to stop cleanly when the store is destroyed.
 
 ### Persistence Format
 
@@ -178,10 +181,10 @@ On startup, this file is read back in. Keys with expired timestamps are skipped 
 ## Future Improvements
 
 - Multi-client concurrency (thread per connection or epoll-based event loop)
-- Active expiry (background thread periodically sweeps for expired keys)
 - Append-only file (AOF) logging for stronger durability guarantees
 - `INCR` / `DECR` commands for atomic integer operations
 - Benchmarking tool to measure throughput (ops/sec)
+- Probabilistic active expiry (sample 20 random keys per sweep instead of full O(n) scan)
 
 ---
 
